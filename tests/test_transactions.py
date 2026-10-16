@@ -54,3 +54,57 @@ class TestTransactionsAndRollback:
 
         # Confirm 1000 pesewas contribution rolled back
         assert service.repo.get_member_contributed_amount(sample_group["members"][0].id, 1) == 0
+
+    def test_concurrent_payments_prevent_overpayment(self, tmp_path):
+        """Simulate concurrent threads attempting simultaneous payments against the same database.
+
+        Verifies that even when multiple processes/threads race to pay for the same member,
+        the immediate transaction prevents total contributions from exceeding the weekly quota.
+        """
+        import concurrent.futures
+        from susuturn.database import get_connection, init_db
+        from susuturn.service import SusuService
+
+        db_file = tmp_path / "concurrent_susu.db"
+        conn_init = get_connection(db_file)
+        init_db(conn_init)
+        service_init = SusuService(conn_init)
+        service_init.create_group("Concurrent Susu", "50.00")
+        service_init.add_member("Ama")
+        service_init.add_member("Kofi")
+        conn_init.close()
+
+        # Both workers attempt to pay 30.00 simultaneously for Ama (whose target is 50.00)
+        # If there were a concurrency race, both 30.00 payments could succeed (total 60.00 > 50.00).
+        # With immediate transaction locking, one will succeed and the other will be rejected
+        # with ExcessivePaymentError (or sqlite3.OperationalError: database locked if busy).
+        results = []
+
+        def worker_pay(amount_str):
+            conn = get_connection(db_file)
+            service = SusuService(conn)
+            try:
+                service.record_contribution("Ama", amount_str)
+                return "SUCCESS"
+            except ExcessivePaymentError:
+                return "EXCESSIVE_REJECTED"
+            except Exception as e:
+                return f"EXCEPTION: {type(e).__name__}"
+            finally:
+                conn.close()
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            f1 = executor.submit(worker_pay, "30.00")
+            f2 = executor.submit(worker_pay, "30.00")
+            results = [f1.result(), f2.result()]
+
+        # Exactly one payment of 30.00 must succeed, and total paid must never exceed 50.00
+        conn_check = get_connection(db_file)
+        svc_check = SusuService(conn_check)
+        ama = svc_check.repo.get_member_by_name("Ama")
+        total_paid = svc_check.repo.get_member_contributed_amount(ama.id, 1)
+        conn_check.close()
+
+        assert "SUCCESS" in results
+        assert total_paid == 3000  # Exactly 30.00 was recorded; 60.00 was prevented!
+
