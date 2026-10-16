@@ -5,6 +5,7 @@ from typing import Optional
 
 from susuturn.database import transaction
 from susuturn.exceptions import (
+    SusuTurnError,
     GroupAlreadyExistsError,
     GroupNotFoundError,
     ValidationError,
