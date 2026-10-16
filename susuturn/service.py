@@ -74,6 +74,8 @@ class SusuService:
         - Member name must not be blank or whitespace-only.
         - Reject duplicate names (case-insensitive).
         - Assign permanent joining position.
+        All checks and inserts are wrapped inside an immediate transaction
+        to eliminate concurrency race conditions.
         """
         self.get_group()  # Ensure group exists
 
@@ -81,22 +83,22 @@ class SusuService:
         if not clean_name:
             raise ValidationError("Member name cannot be blank or whitespace-only.")
 
-        # Check membership lock
-        total_contributions = self.repo.count_total_contributions()
-        if total_contributions > 0:
-            raise MembershipLockedError(
-                "Membership is locked because contributions have already started. "
-                "No new members can join or leave the group."
-            )
-
-        # Check duplicate name
-        existing_member = self.repo.get_member_by_name(clean_name)
-        if existing_member is not None:
-            raise DuplicateMemberError(
-                f"Member with name '{clean_name}' already exists (as '{existing_member.name}', Position #{existing_member.joining_position})."
-            )
-
         with transaction(self.conn):
+            # Check membership lock inside transaction
+            total_contributions = self.repo.count_total_contributions()
+            if total_contributions > 0:
+                raise MembershipLockedError(
+                    "Membership is locked because contributions have already started. "
+                    "No new members can join or leave the group."
+                )
+
+            # Check duplicate name inside transaction
+            existing_member = self.repo.get_member_by_name(clean_name)
+            if existing_member is not None:
+                raise DuplicateMemberError(
+                    f"Member with name '{clean_name}' already exists (as '{existing_member.name}', Position #{existing_member.joining_position})."
+                )
+
             return self.repo.add_member(clean_name)
 
     def get_all_members(self) -> list[Member]:
@@ -113,38 +115,40 @@ class SusuService:
         - Member must exist.
         - Amount must be positive and have at most 2 decimal places.
         - Member payment cannot exceed their remaining balance for the active week.
+        All balance queries, validations, and inserts execute atomically inside
+        a BEGIN IMMEDIATE transaction to prevent concurrent overpayments.
         """
-        group = self.get_group()
-        if group.is_completed:
-            raise CycleCompletedError("The savings cycle has ended. No further contributions are accepted.")
-
         clean_name = (member_name or "").strip()
         if not clean_name:
             raise ValidationError("Member name cannot be blank.")
 
-        member = self.repo.get_member_by_name(clean_name)
-        if member is None:
-            raise MemberNotFoundError(f"Member '{clean_name}' is not registered in this savings group.")
-
         amount_pesewas = parse_ghs_to_pesewas(amount)
 
-        # Check existing contributions for the active week
-        already_paid = self.repo.get_member_contributed_amount(member.id, group.current_week)
-        remaining_balance = group.weekly_contribution_pesewas - already_paid
-
-        if remaining_balance <= 0:
-            raise ExcessivePaymentError(
-                f"Member '{member.name}' has already paid the required weekly contribution of "
-                f"{format_pesewas_to_ghs(group.weekly_contribution_pesewas)} for Week {group.current_week} in full."
-            )
-
-        if amount_pesewas > remaining_balance:
-            raise ExcessivePaymentError(
-                f"Payment of {format_pesewas_to_ghs(amount_pesewas)} exceeds remaining balance. "
-                f"Member '{member.name}' only owes {format_pesewas_to_ghs(remaining_balance)} for Week {group.current_week}."
-            )
-
         with transaction(self.conn):
+            group = self.get_group()
+            if group.is_completed:
+                raise CycleCompletedError("The savings cycle has ended. No further contributions are accepted.")
+
+            member = self.repo.get_member_by_name(clean_name)
+            if member is None:
+                raise MemberNotFoundError(f"Member '{clean_name}' is not registered in this savings group.")
+
+            # Check existing contributions for the active week under transaction lock
+            already_paid = self.repo.get_member_contributed_amount(member.id, group.current_week)
+            remaining_balance = group.weekly_contribution_pesewas - already_paid
+
+            if remaining_balance <= 0:
+                raise ExcessivePaymentError(
+                    f"Member '{member.name}' has already paid the required weekly contribution of "
+                    f"{format_pesewas_to_ghs(group.weekly_contribution_pesewas)} for Week {group.current_week} in full."
+                )
+
+            if amount_pesewas > remaining_balance:
+                raise ExcessivePaymentError(
+                    f"Payment of {format_pesewas_to_ghs(amount_pesewas)} exceeds remaining balance. "
+                    f"Member '{member.name}' only owes {format_pesewas_to_ghs(remaining_balance)} for Week {group.current_week}."
+                )
+
             return self.repo.add_contribution(member.id, group.current_week, amount_pesewas)
 
     # ------------------ Week Closing Operations ------------------ #
@@ -158,53 +162,53 @@ class SusuService:
         - All members must have paid their weekly contribution in full.
         - Payout goes to member at joining position matching current week.
         - Payout amount = Total members * weekly contribution.
-        - Week advance and payout record must be atomically executed.
+        - Balance check, payout record, and week advance are completely atomic.
         - If active week == total members, mark cycle as completed.
         """
-        group = self.get_group()
-        if group.is_completed:
-            raise CycleCompletedError("The savings cycle has already completed.")
-
-        members = self.repo.get_all_members()
-        member_count = len(members)
-
-        if member_count < 2:
-            raise WeekClosingBlockedError(
-                f"At least 2 members are required to run a savings group. Currently only {member_count} registered."
-            )
-
-        active_week = group.current_week
-
-        # Check contribution status of all members
-        statuses = self.repo.get_member_week_statuses(active_week, group.weekly_contribution_pesewas)
-        unpaid = [s for s in statuses if not s.is_paid_in_full]
-
-        if unpaid:
-            outstanding_details = [
-                {
-                    "name": s.member_name,
-                    "position": s.joining_position,
-                    "paid_pesewas": s.paid_pesewas,
-                    "balance_pesewas": s.balance_pesewas,
-                    "balance_formatted": format_pesewas_to_ghs(s.balance_pesewas),
-                }
-                for s in unpaid
-            ]
-            raise WeekClosingBlockedError(
-                f"Cannot close Week {active_week}. Some members have outstanding balances.",
-                outstanding_members=outstanding_details,
-            )
-
-        # Determine recipient by joining position matching current week
-        recipient = self.repo.get_member_by_position(active_week)
-        if recipient is None:
-            raise SusuTurnError(f"No recipient found at joining position {active_week}.")
-
-        total_pot_pesewas = member_count * group.weekly_contribution_pesewas
-        is_final_week = (active_week == member_count)
-        next_week = active_week if is_final_week else active_week + 1
-
         with transaction(self.conn):
+            group = self.get_group()
+            if group.is_completed:
+                raise CycleCompletedError("The savings cycle has already completed.")
+
+            members = self.repo.get_all_members()
+            member_count = len(members)
+
+            if member_count < 2:
+                raise WeekClosingBlockedError(
+                    f"At least 2 members are required to run a savings group. Currently only {member_count} registered."
+                )
+
+            active_week = group.current_week
+
+            # Check contribution status of all members under transaction lock
+            statuses = self.repo.get_member_week_statuses(active_week, group.weekly_contribution_pesewas)
+            unpaid = [s for s in statuses if not s.is_paid_in_full]
+
+            if unpaid:
+                outstanding_details = [
+                    {
+                        "name": s.member_name,
+                        "position": s.joining_position,
+                        "paid_pesewas": s.paid_pesewas,
+                        "balance_pesewas": s.balance_pesewas,
+                        "balance_formatted": format_pesewas_to_ghs(s.balance_pesewas),
+                    }
+                    for s in unpaid
+                ]
+                raise WeekClosingBlockedError(
+                    f"Cannot close Week {active_week}. Some members have outstanding balances.",
+                    outstanding_members=outstanding_details,
+                )
+
+            # Determine recipient by joining position matching current week
+            recipient = self.repo.get_member_by_position(active_week)
+            if recipient is None:
+                raise SusuTurnError(f"No recipient found at joining position {active_week}.")
+
+            total_pot_pesewas = member_count * group.weekly_contribution_pesewas
+            is_final_week = (active_week == member_count)
+            next_week = active_week if is_final_week else active_week + 1
+
             payout = self.repo.record_payout(
                 week_number=active_week,
                 recipient_member_id=recipient.id,
@@ -212,22 +216,22 @@ class SusuService:
             )
             self.repo.advance_week(next_week=next_week, is_completed=is_final_week)
 
-        # Identify next recipient if cycle is not completed
-        next_recipient_name = None
-        if not is_final_week:
-            next_member = self.repo.get_member_by_position(next_week)
-            if next_member:
-                next_recipient_name = next_member.name
+            # Identify next recipient if cycle is not completed
+            next_recipient_name = None
+            if not is_final_week:
+                next_member = self.repo.get_member_by_position(next_week)
+                if next_member:
+                    next_recipient_name = next_member.name
 
-        return {
-            "closed_week": active_week,
-            "total_pot_pesewas": total_pot_pesewas,
-            "recipient_name": recipient.name,
-            "recipient_position": recipient.joining_position,
-            "is_cycle_completed": is_final_week,
-            "next_week": next_week if not is_final_week else None,
-            "next_recipient": next_recipient_name,
-        }
+            return {
+                "closed_week": active_week,
+                "total_pot_pesewas": total_pot_pesewas,
+                "recipient_name": recipient.name,
+                "recipient_position": recipient.joining_position,
+                "is_cycle_completed": is_final_week,
+                "next_week": next_week if not is_final_week else None,
+                "next_recipient": next_recipient_name,
+            }
 
     # ------------------ Report Generation Data ------------------ #
 
