@@ -30,12 +30,12 @@ SusuTurn digitizes this rotation into a reliable, verifiable command-line tool.
 - **Decision:** Once the first contribution is recorded for any member, the group membership is locked permanently. No members may be added, deleted, or reordered.
 - **Rationale:** In a rotating savings group, the total pot size ($N \times \text{weekly\_amount}$) and the total duration ($N$ weeks) are fixed by the number of members $N$. Adding or removing members midway would alter the pot amount and disrupt the rotation schedule for members who already paid or received their turns. Locking membership at the moment money begins moving ensures mathematical and contractual consistency.
 
-### 2.5 Strict Atomic Week Closing
-- **Decision:** Closing a week requires every member to have paid their weekly contribution in full. Week closing records the payout and advances the current week inside an immediate SQLite transaction.
+### 2.5 Strict Atomic Transactions & Concurrency Safety
+- **Decision:** All critical read-validate-write sequences (balance checking before payment, membership locking checks before adding a member, and member debt checking before closing a week) are wrapped in `BEGIN IMMEDIATE` SQLite transactions.
 - **Rationale:**
-  - If any member has an outstanding balance, closing is blocked and the exact unpaid amounts are displayed. The active week does not advance.
-  - Transactions ensure that recording the payout and updating the group's current week / completion status either both commit or neither commits, eliminating partial or orphaned states.
-  - SQLite table constraints (`UNIQUE` on `payouts.week_number` and `payouts.recipient_member_id`) structurally prevent double-payouts to the same member.
+  - In concurrent CLI invocations (e.g., two users contributing simultaneously), reading the remaining balance outside a transaction creates a time-of-check to time-of-use (TOCTOU) race condition that could permit combined overpayment.
+  - By acquiring an immediate write lock before checking the member's current contributions, subsequent writes from concurrent processes are serialized, guaranteeing that total contributions never exceed the weekly target.
+  - Weekly closing is completely atomic: debt validation, payout insertion, and week advancement succeed together or rollback completely.
 
 ---
 
@@ -50,12 +50,47 @@ The SQLite schema leverages SQLite's relational integrity features:
 
 ---
 
-## 4. Testing Strategy
+## 4. Current Limitations
 
-The automated test suite in `tests/` uses `pytest` and contains 41 tests across 6 dedicated test modules:
+While SusuTurn meets all requirements of the specification, the current architecture intentionally incorporates specific design tradeoffs:
+
+1. **Single Rotation Limit per SQLite File:**
+   Starting a subsequent cycle requires spinning up a new database file via `--db <filename>`. There is currently no multi-cycle rollover entity in the database schema.
+2. **Fixed Weekly Schedule Only:**
+   The frequency is strictly weekly. Daily or monthly susu schemes (common among market traders in Makola and Kejetia) are not currently supported by the configuration model.
+3. **No Dynamic Member Swap or Emergency Reordering:**
+   If a member faces an emergency and needs an earlier payout turn, swapping positions requires manual database intervention because joining positions are immutable.
+4. **Local SQLite Concurrency Boundary:**
+   SQLite file locking works well for single-user CLI execution and local multi-process access, but does not scale to high-concurrency client-server web deployments.
+
+---
+
+## 5. Future Enhancements (Given More Time)
+
+If expanded beyond the assessment scope into an enterprise-grade financial management system, the following enhancements would be prioritized:
+
+1. **Turn-Swapping Protocol:**
+   Implement a cryptographically verifiable mutual-consent turn exchange mechanism (`susuturn swap-turn --from "Ama" --to "Kofi"`), allowing members to trade turns if agreed by both parties without altering overall cycle mechanics.
+2. **Multi-Cycle Support & Rollover:**
+   Introduce a `cycles` table parent entity so that a single group can seamlessly advance from Cycle 1 to Cycle 2, carrying forward historical member reputation and attendance metrics.
+3. **Mobile Money (MoMo) Webhook Integration:**
+   Integrate with Ghanaian payment gateways (Paystack, Hubtel, or direct MTN MoMo / Telecel Cash APIs) to automatically ingest and reconcile SMS or webhook payments directly into `contributions`.
+4. **Variable Frequency & Configurable Pots:**
+   Support daily, bi-weekly, or monthly intervals (`--frequency daily`), matching real-world market artisan practices.
+5. **CSV / Excel Audit Export:**
+   Add a `susuturn export --format csv` command to generate downloadable financial audit sheets for group treasurers.
+6. **Automated Reminders:**
+   Integrate Twilio or local SMS providers to send automated WhatsApp / SMS reminders to members with outstanding balances before weekly closing deadlines.
+
+---
+
+## 6. Testing Strategy
+
+The automated test suite in `tests/` uses `pytest` and contains 44 tests across 7 dedicated test modules:
 - `test_money.py`: Validates string parsing, integer conversion, rejection of malformed/scientific/negative inputs, and formatting.
 - `test_members.py`: Validates group creation, membership sequencing, whitespace stripping, case-insensitive uniqueness, and membership locking.
 - `test_contributions.py`: Validates single payments, partial payments, cumulative balance checks, and rejection of overpayments.
 - `test_week_closing.py`: Validates blocking on unpaid balances, pot calculation, payout assignment, week advancing, and cycle completion.
+- `test_transactions.py`: Validates atomic rollbacks, excessive payment rollbacks, blocked week rollbacks, and transaction isolation.
 - `test_reports.py`: Validates group summaries, contribution tables, payout histories, and upcoming recipient displays.
 - `test_cli.py`: End-to-end integration tests executing command-line dispatches against temporary databases.
