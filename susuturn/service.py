@@ -133,6 +133,14 @@ class SusuService:
             if member is None:
                 raise MemberNotFoundError(f"Member '{clean_name}' is not registered in this savings group.")
 
+            # Require at least 2 members before accepting contributions to prevent deadlock
+            total_members = self.repo.count_members()
+            if total_members < 2:
+                raise ValidationError(
+                    f"A rotating savings group requires at least 2 members before contributions can begin. "
+                    f"Currently only {total_members} member is registered."
+                )
+
             # Check existing contributions for the active week under transaction lock
             already_paid = self.repo.get_member_contributed_amount(member.id, group.current_week)
             remaining_balance = group.weekly_contribution_pesewas - already_paid

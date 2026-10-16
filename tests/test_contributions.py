@@ -2,6 +2,7 @@
 
 import pytest
 from susuturn.exceptions import (
+    ValidationError,
     MemberNotFoundError,
     ExcessivePaymentError,
     InvalidMoneyError,
@@ -63,3 +64,21 @@ class TestContributions:
 
         with pytest.raises(ExcessivePaymentError, match="already paid the required weekly contribution"):
             service.record_contribution("Ama", "10.00")
+
+    def test_reject_contribution_with_single_member_and_membership_not_locked(self, service):
+        service.create_group("Solo Susu", "50.00")
+        service.add_member("Solo")
+
+        # Attempting to pay with only 1 member must be rejected
+        with pytest.raises(ValidationError, match="requires at least 2 members"):
+            service.record_contribution("Solo", "50.00")
+
+        # Crucial: verify that the rejected payment DID NOT lock membership!
+        # Adding a second member must succeed
+        m2 = service.add_member("SecondMember")
+        assert m2.joining_position == 2
+
+        # Now that 2 members are present, contributions should be accepted
+        c = service.record_contribution("Solo", "50.00")
+        assert c.amount_pesewas == 5000
+
