@@ -6,7 +6,8 @@
 #### *Contribute Together. Receive in Turn.*
 
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-006B3F?logo=python&logoColor=white)](https://python.org)
-[![Tests](https://img.shields.io/badge/tests-41%20passing-006B3F?logo=pytest&logoColor=white)](https://github.com/brainiacweb-tech/susuturn)
+[![CI Tests](https://github.com/brainiacweb-tech/susuturn/actions/workflows/tests.yml/badge.svg)](https://github.com/brainiacweb-tech/susuturn/actions)
+[![Tests](https://img.shields.io/badge/tests-44%20passing-006B3F?logo=pytest&logoColor=white)](https://github.com/brainiacweb-tech/susuturn)
 [![Database](https://img.shields.io/badge/database-SQLite%203-FCD116?logo=sqlite&logoColor=black)](https://sqlite.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-CE1126.svg)](https://github.com/brainiacweb-tech/susuturn/blob/main/LICENSE)
 [![Code Style](https://img.shields.io/badge/code%20style-PEP%208-111111)](https://peps.python.org/pep-0008/)
@@ -312,11 +313,11 @@ erDiagram
 
 ## 🧪 Automated Testing
 
-SusuTurn includes an extensive automated test suite with **41 tests** covering every functional edge case, monetary precision boundary, and database constraint.
+SusuTurn includes an extensive automated test suite with **44 tests** covering every functional edge case, monetary precision boundary, database constraint, and transaction rollback scenario. All tests are continuously verified on every commit across Python 3.11, 3.12, and 3.13 via GitHub Actions.
 
-Run the test suite:
+Run the test suite locally:
 ```bash
-python -m pytest
+python -m pytest -v
 ```
 
 ```text
@@ -325,16 +326,54 @@ platform win32 -- Python 3.14.2, pytest-9.0.3, pluggy-1.6.0
 rootdir: C:\Users\USER\OneDrive\Desktop\SusuTurn
 configfile: pyproject.toml
 testpaths: tests
-collected 41 items
+collected 44 items
 
-tests/test_cli.py .................                                      [ 12%]
-tests/test_contributions.py ..............                               [ 26%]
-tests/test_members.py ....................                               [ 46%]
-tests/test_money.py .........................                            [ 78%]
-tests/test_reports.py ............                                       [ 90%]
-tests/test_week_closing.py ...............                               [100%]
+tests/test_cli.py::TestCLI::test_cli_help PASSED                         [  2%]
+tests/test_cli.py::TestCLI::test_cli_no_args_shows_help PASSED           [  4%]
+tests/test_cli.py::TestCLI::test_cli_lifecycle PASSED                    [  6%]
+tests/test_cli.py::TestCLI::test_cli_duplicate_group_error PASSED        [  9%]
+tests/test_cli.py::TestCLI::test_cli_invalid_money_error PASSED          [ 11%]
+tests/test_contributions.py::TestContributions::test_record_single_full_contribution PASSED [ 13%]
+tests/test_contributions.py::TestContributions::test_record_partial_contributions_and_exact_sum PASSED [ 15%]
+tests/test_contributions.py::TestContributions::test_reject_unknown_member_contribution PASSED [ 18%]
+tests/test_contributions.py::TestContributions::test_reject_zero_or_negative_contribution PASSED [ 20%]
+tests/test_contributions.py::TestContributions::test_reject_payment_exceeding_remaining_balance PASSED [ 22%]
+tests/test_contributions.py::TestContributions::test_reject_payment_when_already_fully_paid PASSED [ 25%]
+tests/test_members.py::TestMembers::test_create_savings_group PASSED     [ 27%]
+tests/test_members.py::TestMembers::test_reject_second_group_creation PASSED [ 29%]
+tests/test_members.py::TestMembers::test_add_members_preserves_joining_order PASSED [ 31%]
+tests/test_members.py::TestMembers::test_reject_blank_or_whitespace_name PASSED [ 34%]
+tests/test_members.py::TestMembers::test_trim_surrounding_whitespace PASSED [ 36%]
+tests/test_members.py::TestMembers::test_reject_duplicate_member_names_case_insensitive PASSED [ 38%]
+tests/test_members.py::TestMembers::test_add_member_requires_group PASSED [ 40%]
+tests/test_members.py::TestMembers::test_membership_lock_after_first_contribution PASSED [ 43%]
+tests/test_money.py::TestMoneyParsing::test_valid_integer_amount PASSED  [ 45%]
+tests/test_money.py::TestMoneyParsing::test_valid_decimal_amount PASSED  [ 47%]
+tests/test_money.py::TestMoneyParsing::test_currency_prefix_and_whitespace PASSED [ 50%]
+tests/test_money.py::TestMoneyParsing::test_reject_zero_amount PASSED    [ 52%]
+tests/test_money.py::TestMoneyParsing::test_reject_negative_amount PASSED [ 54%]
+tests/test_money.py::TestMoneyParsing::test_reject_more_than_two_decimal_places PASSED [ 56%]
+tests/test_money.py::TestMoneyParsing::test_reject_scientific_notation PASSED [ 59%]
+tests/test_money.py::TestMoneyParsing::test_reject_nan_and_infinity PASSED [ 61%]
+tests/test_money.py::TestMoneyParsing::test_reject_empty_or_invalid_string PASSED [ 63%]
+tests/test_money.py::TestMoneyFormatting::test_format_standard_pesewas PASSED [ 65%]
+tests/test_money.py::TestMoneyFormatting::test_format_without_prefix PASSED [ 68%]
+tests/test_money.py::TestMoneyFormatting::test_format_negative PASSED    [ 70%]
+tests/test_money.py::TestMoneyFormatting::test_format_type_error PASSED  [ 72%]
+tests/test_reports.py::TestReports::test_report_empty_group PASSED       [ 75%]
+tests/test_reports.py::TestReports::test_report_active_group_with_partial_contributions PASSED [ 77%]
+tests/test_reports.py::TestReports::test_report_completed_cycle PASSED   [ 79%]
+tests/test_reports.py::TestReports::test_format_closing_blocked PASSED   [ 81%]
+tests/test_reports.py::TestReports::test_format_closing_success PASSED   [ 84%]
+tests/test_transactions.py::TestTransactionsAndRollback::test_contribution_rollback_on_failure PASSED [ 86%]
+tests/test_transactions.py::TestTransactionsAndRollback::test_week_closing_atomic_rollback_on_blocked PASSED [ 88%]
+tests/test_transactions.py::TestTransactionsAndRollback::test_explicit_transaction_rollback_preserves_state PASSED [ 90%]
+tests/test_week_closing.py::TestWeekClosing::test_block_week_closing_if_less_than_two_members PASSED [ 93%]
+tests/test_week_closing.py::TestWeekClosing::test_block_closing_when_contributions_unpaid PASSED [ 95%]
+tests/test_week_closing.py::TestWeekClosing::test_successful_week_1_closing_and_payout PASSED [ 97%]
+tests/test_week_closing.py::TestWeekClosing::test_full_cycle_rotation_and_completion PASSED [100%]
 
-============================= 41 passed in 0.79s ==============================
+============================= 44 passed in 0.95s ==============================
 ```
 
 ---
